@@ -152,7 +152,6 @@ contract StandardToken is ERC20, BasicToken {
     }
 }
 
-
 /**
  * @title Mintable token   
  */
@@ -226,6 +225,13 @@ contract TriracleToken is MintableToken {
     uint public startTime;
     uint public endTime;
 
+    modifier transferCheck() {
+        if (block.timestamp >= startTime && block.timestamp < endTime) {
+            require(msg.sender == owner);
+        }
+        _;
+    }
+
     /**
      * @dev Contructor of token
      */
@@ -235,16 +241,16 @@ contract TriracleToken is MintableToken {
         decimals = 18;
         startTime = _startTime;
         endTime = _endTime;
+        mint(msg.sender, 20000000000000000000000000); // 20m token
     }
 
     /**
      * @dev overwrite transfer
      */
-    function transfer(address to, uint value) public returns (bool) {
+    function transfer(address to, uint value) public transferCheck returns (bool) {
         require(to != address(0x0));
-        require(block.timestamp >= endTime);
 
-        super.transfer(to, value);
+        return super.transfer(to, value);
     }
 
     /**
@@ -254,7 +260,7 @@ contract TriracleToken is MintableToken {
         require(to != address(0x0));
         require(block.timestamp >= endTime);
 
-        super.transferFrom(from, to, value);
+        return super.transferFrom(from, to, value);
     }
 }
 
@@ -267,11 +273,10 @@ contract Crowdsale is Ownable {
     address public wallet;
     // amount of raised money
     uint public totalWeiRaised;
-    // amount of bonus
-    // bonus (can be set anytime in crowdsale)
-    uint public bonus;
-    // maximum amount can buy
-    uint public balanceLimit;
+    // maximum amount can buy in wei
+    uint public capLimit;
+    // total wei each participant contribute
+    mapping(address=>uint) public totalContribute;
     
     /**
      * @dev contructor for crowdsale
@@ -279,7 +284,7 @@ contract Crowdsale is Ownable {
     function Crowdsale() public {
         token = createToken();
         wallet = msg.sender;
-        balanceLimit = 1000000000000000000000000;
+        capLimit = 1000000000000000000; // 1 ETH = 10 ^ 6 tokens
     }
 
     /**
@@ -299,11 +304,10 @@ contract Crowdsale is Ownable {
 
     /**
      * @dev Forward fund to address
+     * @param amount amount to be sent
      */
-    function forwardFund() internal {
-        if (this.balance > 0) {
-            wallet.transfer(this.balance);
-        }
+    function forwardFund(uint amount) internal {
+        wallet.transfer(amount);
     }
 
     /**
@@ -320,10 +324,18 @@ contract Crowdsale is Ownable {
         return block.timestamp < startTime || block.timestamp >= endTime;
     }
 
+    /**
+     * @dev increase cap limit of tokens
+     * @param amount amount increase
+     */
+    function increaseCapLimit(uint amount) public onlyOwner {
+        capLimit.add(amount);
+    }
+
     // 02/03/2018 12AM
-    uint startTime = 1519974000;
-    uint stage1 = startTime + 4 hours;
-    uint endTime = stage1 + 2 hours;
+    uint startTime = 1520215800;
+    uint stage1 = startTime + 1 hours;
+    uint endTime = stage1 + 1 hours;
 
     /**
      * @dev Fallback function to buy token
@@ -332,74 +344,55 @@ contract Crowdsale is Ownable {
         buyTokens(msg.sender);
     }
 
+    /*
+     * @dev check eligible of buyer
+     * @param buyer address need to be checked
+     */
+    function eligibleCheck(address buyer) internal returns (uint) {
+        if (block.timestamp < startTime) return 0;
+        if (block.timestamp >= endTime) return 0;
+        
+        uint remainCap = capLimit.sub(totalContribute[buyer]);
+        uint weiAmount = msg.value;
+        if (remainCap < weiAmount) {
+            return remainCap;
+        }
+        else {
+            return weiAmount;
+        }
+    }
+
     /**
      * check if exceed balance limit then refund to buyer the exceeded
-     * @dev Forward fund to address
+     * @dev Forward fund to addressins.token().then((dm) => {tkadd = dm})
+
      * @param benificary Who buy token
      */
-    function buyTokens(address benificary) payable public {
+    function buyTokens(address benificary) payable public returns (uint) {
         require(benificary != address(0x0));
         require(msg.value != 0);
         require(!hasEnd());
 
-        uint weiAmount = msg.value;
+        uint weiAmount = eligibleCheck(msg.sender);
         uint tokenAmount;
 
-        if (bonus != 0) {
-            uint bonusAmount = weiAmount.mul(bonus).div(100);
-            if (block.timestamp >= startTime && block.timestamp < stage1) {
-                tokenAmount = weiAmount.mul(1200); // 20% bonus in stage1
-                tokenAmount.add(bonusAmount);
-            }
-            else {
-                tokenAmount = weiAmount.mul(1000);
-                tokenAmount.add(bonusAmount);
-            }
+        if (block.timestamp >= startTime && block.timestamp < stage1) {
+            tokenAmount = weiAmount.mul(1200); // 20% bonus in stage1
         }
         else {
-            if (block.timestamp >= startTime && block.timestamp < stage1) {
-                tokenAmount = weiAmount.mul(1200); // 20% bonus in stage1
-            }
-            else {
-                tokenAmount = weiAmount.mul(1000);
-            }
+            tokenAmount = weiAmount.mul(1000);
         }
 
-        uint totalBalance = tokenAmount + token.balanceOf(benificary);
-        if (totalBalance <= balanceLimit) {
-            forwardFund();
-            totalWeiRaised = totalWeiRaised.add(weiAmount);
-            token.mint(benificary, tokenAmount);
+        if (msg.value > weiAmount) {
+            refundExceed(msg.sender, msg.value.sub(weiAmount));
         }
-        else {
-            uint refund = totalBalance - balanceLimit;
-            uint refundWeiAmount;
-            if (bonus != 0) {
-                if (block.timestamp >= startTime && block.timestamp < stage1) {
-                    // tokenAmount = weiAmount * (20 + bonus) * 10
-                    refundWeiAmount = refund.div(10).div(20 + bonus);
-                }
-                else {
-                    refundWeiAmount = refund.div(10).div(bonus);
-                }
-            }
-            else {
-                if (block.timestamp >= startTime && block.timestamp < stage1) {
-                    refundWeiAmount = refund.div(1200); // 20% bonus in stage1
-                }
-                else {
-                    refundWeiAmount = refund.div(1000);
-                }
-            }
-            refundExceed(benificary, weiAmount);
-            forwardFund();
-            weiAmount = weiAmount.sub(refundWeiAmount);
-            tokenAmount = tokenAmount.sub(refund);
-            if (tokenAmount != 0) {
-                token.mint(benificary, tokenAmount);
-                totalWeiRaised = totalWeiRaised.add(weiAmount);
-            }
-        }
+
+        forwardFund(weiAmount);
+        assert(token.transfer(benificary, weiAmount));
+        totalWeiRaised = totalWeiRaised.add(weiAmount);
+        totalContribute[msg.sender] = totalContribute[msg.sender].add(weiAmount);
+
+        return weiAmount;
     }
 
     /**
@@ -408,45 +401,6 @@ contract Crowdsale is Ownable {
      */
     function destroyToken(uint amount) public onlyOwner {
         token.destroy(amount.mul(1000000000000000000), msg.sender);
-    }
-
-    /**
-     * @dev Mint some tokens for an address (may be they paid by others coin)
-     * @param benificary receiver address
-     * @param tokenAmount total tokens were received
-     */
-    function mintToken(address benificary, uint tokenAmount) internal {
-        require(benificary != address(0x0));
-
-        uint weiAmount;
-        if (bonus != 0) {
-            if (block.timestamp >= startTime && block.timestamp < stage1) {
-                // tokenAmount = weiAmount * (20 + bonus) * 10
-                weiAmount = tokenAmount.div(10).div(20 + bonus);
-            }
-            else {
-                weiAmount = tokenAmount.div(10).div(bonus);
-            }
-        }
-        else {
-            if (block.timestamp >= startTime && block.timestamp < stage1) {
-                weiAmount = tokenAmount.div(1200); // 20% bonus in stage1
-            }
-            else {
-                weiAmount = tokenAmount.div(1000);
-            }
-        }
-
-        totalWeiRaised = totalWeiRaised.add(weiAmount);
-        token.mint(benificary, tokenAmount);
-    }
-
-    /**
-     * @dev Set bonus for crowdsale
-     * @param _bonus bonus (%)
-     */
-    function setBonus(uint _bonus) public onlyOwner {
-        bonus = _bonus;
     }
 
     /**
@@ -467,17 +421,78 @@ contract Crowdsale is Ownable {
 
         return true;
     }
+
+    /**
+     * @dev change the capacity limit each investor can buy
+     * @param limit new limit
+     */
+    function setCapLimit(uint limit) public onlyOwner {
+        capLimit = limit;
+    }
+}
+
+contract TokenVault is Ownable {
+    using SafeMath for uint;
+    // the time when user can withdraw token
+    uint public endTime = 1520230200;
+    // total tokens of this contract
+    uint public totalToken;
+    // total token distributed
+    uint public tokenDistributed;
+    TriracleToken public token;
+    // number of tokens investors have in this contract
+    mapping(address=>uint) public holdingBalances;
+
+    function TokenVault(TriracleToken _token) public {
+        token = _token;
+    }
+
+    /*
+     * @dev withdraw the money from withdrawer,
+     * withdrawer must have more then amount to withdraw
+     * @param amount amount to withdraw
+     */
+    function withdraw(uint amount) public returns (bool) {
+        require(block.timestamp >= endTime);
+        require(holdingBalances[msg.sender] != 0);
+
+        if (amount > holdingBalances[msg.sender]) {
+            if (holdingBalances[msg.sender] != 0) {
+                assert(token.transfer(msg.sender, holdingBalances[msg.sender]));
+            }
+            holdingBalances[msg.sender] = 0;
+        }
+        else {
+            assert(token.transfer(msg.sender, amount));
+            holdingBalances[msg.sender] = holdingBalances[msg.sender].sub(amount);
+        }
+        return true;
+    }
+
+    /*
+     * @dev increase balance has in this contract
+     * @param receiver receiver of tokens
+     * @param amount amount of money
+     */
+    function increaseBalance(address receiver, uint amount) public onlyOwner {
+        require(block.timestamp < endTime);
+
+        assert(tokenDistributed.add(amount) > totalToken);
+
+        holdingBalances[receiver] = holdingBalances[receiver].add(amount);
+        tokenDistributed = tokenDistributed.add(amount);
+    }
 }
 
 contract PlusPlusCrowdsale is Crowdsale {
+    // contract holding tokens of owner
+    TokenVault public vault;
+
     function PlusPlusCrowdsale () public 
     Crowdsale()
     {
-
-    }
-
-    function mintTriracleToken(address benificary, uint amount) public onlyOwner {
-        mintToken(benificary, amount);
+        vault = new TokenVault(token);
+        token.transfer(vault, 2000000000000000000000000); 
     }
 
     function buyTriracleToken(address sender) public payable {
@@ -486,5 +501,9 @@ contract PlusPlusCrowdsale is Crowdsale {
 
     function () public payable {
         buyTriracleToken(msg.sender);
+    }
+
+    function distributeVault(address receiver, uint amount) public onlyOwner {
+        vault.increaseBalance(receiver, amount);
     }
 }
